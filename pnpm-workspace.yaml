@@ -1,3 +1,14 @@
 packages:
   - "apps/*"
   - "packages/*"
+allowBuilds:
+  '@firebase/util': true
+  esbuild: true
+  protobufjs: true
+minimumReleaseAgeExclude:
+  - '@firebase/app-compat@0.5.15'
+  - '@firebase/app@0.15.1'
+  - '@firebase/remote-config-compat@0.2.27'
+  - '@firebase/remote-config@0.9.0'
+  - firebase-tools@15.23.0
+  - firebase@12.16.0

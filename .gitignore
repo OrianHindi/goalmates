@@ -35,3 +35,9 @@ next-env.d.ts
 
 # local PGlite data dir -- local-only dev DB
 .pglite-data/
+
+# firebase emulator debug logs
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.firebase/

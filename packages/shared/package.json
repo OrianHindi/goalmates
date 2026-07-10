@@ -1,0 +1,29 @@
+{
+  "name": "@goalmates/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./src/index.ts",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./scoring": "./src/scoring/index.ts",
+    "./firestore": "./src/firestore/index.ts",
+    "./auth": "./src/auth/index.ts",
+    "./seed": "./src/seed/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run src/scoring",
+    "test:rules": "vitest run src/firestore-rules"
+  },
+  "dependencies": {
+    "firebase": "^12.16.0"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.9"
+  }
+}
