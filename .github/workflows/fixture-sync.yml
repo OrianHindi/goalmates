@@ -28,6 +28,18 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # The `secrets` context cannot be referenced directly inside an `if:`
+    # conditional (job- or step-level) — GitHub rejects the whole workflow
+    # file at parse time if you try ("Unrecognized named-value: 'secrets'"),
+    # which is exactly what happened here: every run since this workflow's
+    # first commit failed in 0s with "likely failed because of a workflow
+    # file issue" and zero jobs ever executed (confirmed via `gh run list`/
+    # `gh run view` against this repo, and independently against GitHub's
+    # own docs: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
+    # Fix: hoist the secret into a job-level `env:` var first, then branch
+    # `if:` on that env var instead of `secrets` directly.
+    env:
+      HAS_REAL_FIREBASE_PROJECT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,13 +59,11 @@ jobs:
       # Real-project path — only runs once the founder has created a real
       # Firebase project and added the FIREBASE_SERVICE_ACCOUNT repo
       # secret (a Firebase service-account JSON key). Until then this
-      # step is skipped entirely: `secrets.FIREBASE_SERVICE_ACCOUNT` is an
-      # empty string when the secret doesn't exist, so the `if:` below is
-      # always well-formed and this step is a no-op — no secret is
-      # required for this workflow (or its CI) to pass right now.
+      # step is skipped entirely: no secret is required for this workflow
+      # (or its CI) to pass right now.
       # -------------------------------------------------------------
       - name: Sync fixtures (real Firebase project)
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'true' }}
         env:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
@@ -73,13 +83,13 @@ jobs:
       # the second run should report zero created/updated fixtures.
       # -------------------------------------------------------------
       - uses: actions/setup-java@v4
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT == '' }}
+        if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'false' }}
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Sync fixtures (emulator dry run — no real project yet)
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT == '' }}
+        if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'false' }}
         run: |
           pnpm exec firebase emulators:exec --only firestore,auth \
             "pnpm seed && pnpm run sync-fixtures && pnpm run sync-fixtures"
