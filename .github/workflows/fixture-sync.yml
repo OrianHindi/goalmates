@@ -1,0 +1,85 @@
+name: Fixture Sync
+
+# Periodic fixture-data sync — there is no server/Cloud Functions in
+# GoalMates (see docs/architecture-v1.md §0), so this workflow is the
+# "cron job" that keeps fixture times/teams/scores current. Full design
+# (idempotency guarantee, emulator-vs-real conditional, founder action
+# needed later) is in docs/architecture-v1.md §8 — read that first if
+# changing this file.
+#
+# Cron interval: every 60 minutes. Picked over a tighter 30-min cadence
+# because this repo is private, so GitHub Actions minutes are NOT
+# unlimited-free the way they are on a public repo — they draw from the
+# account's monthly free-tier minutes. Hourly is still plenty fresh for a
+# friends' hobby app (a reschedule or score correction showing up within an
+# hour is fine) and roughly halves the CI-minutes footprint of the
+# emulator-validated default path below versus 30 minutes. Once the real-
+# project path below is active, a real sync run has no emulator/JVM
+# startup cost and is much cheaper per run — worth revisiting the interval
+# at that point if fresher data is wanted.
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No version input: pnpm/action-setup reads the pinned version from
+      # the root package.json "packageManager" field, so CI can never
+      # drift from the version used locally (same as ci.yml).
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # -------------------------------------------------------------
+      # Real-project path — only runs once the founder has created a real
+      # Firebase project and added the FIREBASE_SERVICE_ACCOUNT repo
+      # secret (a Firebase service-account JSON key). Until then this
+      # step is skipped entirely: `secrets.FIREBASE_SERVICE_ACCOUNT` is an
+      # empty string when the secret doesn't exist, so the `if:` below is
+      # always well-formed and this step is a no-op — no secret is
+      # required for this workflow (or its CI) to pass right now.
+      # -------------------------------------------------------------
+      - name: Sync fixtures (real Firebase project)
+        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$GOOGLE_APPLICATION_CREDENTIALS"
+          pnpm run sync-fixtures
+          rm -f "$GOOGLE_APPLICATION_CREDENTIALS"
+
+      # -------------------------------------------------------------
+      # Default path — no real Firebase project exists yet, so there is
+      # nothing real to reach. Instead, prove the script actually works by
+      # running it against a throwaway emulator instance spun up and torn
+      # down entirely inside this job (same `firebase emulators:exec`
+      # pattern as ci.yml's rules-test step). Seeds first so there's a
+      # FINISHED fixture in play to verify the sync doesn't corrupt, then
+      # runs the sync script twice back-to-back to exercise idempotency —
+      # the second run should report zero created/updated fixtures.
+      # -------------------------------------------------------------
+      - uses: actions/setup-java@v4
+        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT == '' }}
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Sync fixtures (emulator dry run — no real project yet)
+        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT == '' }}
+        run: |
+          pnpm exec firebase emulators:exec --only firestore,auth \
+            "pnpm seed && pnpm run sync-fixtures && pnpm run sync-fixtures"

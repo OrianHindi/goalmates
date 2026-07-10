@@ -100,3 +100,4 @@ Per finished fixture, per member:
 
 1. Can members leave a group / can the admin remove a member in v1, and what happens to their leaderboard row? (PM lean: allow leave, keep row grayed out — but confirm before building.)
 2. Real fixture-data API selection and account signup — founder action, post-v1.
+3. If a fixture's kickoff time changes (a reschedule) after group members have already placed bets on it, should their existing bets be kept as-is, or should members be warned/notified?
