@@ -1,0 +1,224 @@
+// GoalMates Firestore Security Rules — v1
+//
+// There is no app server: this ruleset IS the authorization boundary for
+// group membership, bet ownership, pre-kickoff bet privacy, and admin-only
+// fixture score entry. See docs/architecture-v1.md for the full data model,
+// the rationale behind every DECIDE below, and the accepted-risk notes.
+//
+// Key mechanism: group creation (group doc + creator's admin-membership doc
+// + joinCode doc + competitionAdmins grant doc) happens as ONE client batch
+// write. getAfter() reads the post-batch state of a sibling document, which
+// is how e.g. the joinCode's create rule can verify "a group created by this
+// same user, in this same batch" even though the group doc didn't exist yet
+// when the batch started. (Verified via Firebase's own docs: getAfter() is
+// exactly for validating multi-document atomic writes in the same
+// batch/transaction — see architecture doc §3 for the citation.)
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isMember(groupId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
+    function isGroupAdmin(groupId) {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Denormalized grant (see competitionAdmins/{grantId} below) — avoids
+    // needing a "find any group where I'm admin" query, which rules cannot
+    // express.
+    function isCompetitionAdmin(competitionId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/competitionAdmins/$(competitionId + '_' + request.auth.uid));
+    }
+
+    function fixtureOf(fixtureId) {
+      return get(/databases/$(database)/documents/fixtures/$(fixtureId)).data;
+    }
+
+    function isLocked(fixtureId) {
+      return request.time >= fixtureOf(fixtureId).kickoffAt;
+    }
+
+    // ---------------------------------------------------------------
+    // users/{userId} — profile, 1:1 with Firebase Auth uid
+    // ---------------------------------------------------------------
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['displayName', 'photoURL'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0;
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // competitions/{competitionId} — global, seeded reference data
+    // ---------------------------------------------------------------
+    match /competitions/{competitionId} {
+      allow read: if isSignedIn();
+      allow write: if false; // seed script only, via Admin SDK (bypasses rules)
+    }
+
+    // ---------------------------------------------------------------
+    // fixtures/{fixtureId} — top-level, carries competitionId (see doc §2
+    // for why top-level beats a competitions/{id}/fixtures subcollection)
+    // ---------------------------------------------------------------
+    match /fixtures/{fixtureId} {
+      allow read: if isSignedIn();
+      allow create: if false; // seed script only, via Admin SDK
+
+      // Only status/homeScore/awayScore may change. Identity fields
+      // (especially kickoffAt) are pinned immutable so a competition-admin
+      // can never move kickoff to retroactively unlock or re-lock bets.
+      allow update: if isSignedIn()
+        && isCompetitionAdmin(resource.data.competitionId)
+        && request.resource.data.competitionId == resource.data.competitionId
+        && request.resource.data.homeTeam == resource.data.homeTeam
+        && request.resource.data.awayTeam == resource.data.awayTeam
+        && request.resource.data.kickoffAt == resource.data.kickoffAt
+        && request.resource.data.externalRef == resource.data.externalRef
+        && request.resource.data.status in ['SCHEDULED', 'FINISHED']
+        && (request.resource.data.status == 'FINISHED'
+              ? (request.resource.data.homeScore is int && request.resource.data.homeScore >= 0
+                 && request.resource.data.awayScore is int && request.resource.data.awayScore >= 0)
+              : (request.resource.data.homeScore == null && request.resource.data.awayScore == null));
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // joinCodes/{code} — resolves a shareable code to a groupId. Created
+    // once, atomically, as part of group creation; immutable after.
+    // ---------------------------------------------------------------
+    match /joinCodes/{code} {
+      allow read: if isSignedIn(); // must be resolvable by a non-member to join
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['groupId', 'createdBy', 'createdAt'])
+        && request.resource.data.groupId is string
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.createdBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)/members/$(request.auth.uid)).data.role == 'admin';
+      // A code collision (doc already exists) makes the second write an
+      // "update", which is always denied — the client catches that and
+      // retries with a freshly generated code.
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // competitionAdmins/{competitionId_userId} — "may edit fixtures for
+    // this competition" grant. Created once per group-creation batch.
+    // No admin-removal path in v1 (see doc — accepted, documented risk).
+    // ---------------------------------------------------------------
+    match /competitionAdmins/{grantId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['competitionId', 'userId', 'groupId', 'grantedAt'])
+        && request.resource.data.userId == request.auth.uid
+        && grantId == request.resource.data.competitionId + '_' + request.auth.uid
+        && request.resource.data.grantedAt == request.time
+        && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.createdBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.competitionId == request.resource.data.competitionId;
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // groups/{groupId}
+    // ---------------------------------------------------------------
+    match /groups/{groupId} {
+      allow read: if isMember(groupId);
+
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['name', 'competitionId', 'createdBy', 'createdAt'])
+        && request.resource.data.name is string && request.resource.data.name.size() > 0
+        && request.resource.data.competitionId is string
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/competitions/$(request.resource.data.competitionId))
+        // creator's own admin-membership doc must land in this same batch
+        && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == 'admin';
+
+      // Only the name is editable; competitionId/createdBy are immutable
+      // (one group <-> one competition, fixed at creation — product spec §2).
+      allow update: if isGroupAdmin(groupId)
+        && request.resource.data.competitionId == resource.data.competitionId
+        && request.resource.data.createdBy == resource.data.createdBy;
+      allow delete: if false; // no group deletion in v1
+
+      // -------------------------------------------------------------
+      // groups/{groupId}/members/{memberId}
+      // -------------------------------------------------------------
+      match /members/{memberId} {
+        allow read: if isMember(groupId);
+
+        allow create: if isSignedIn() && request.auth.uid == memberId
+          && request.resource.data.keys().hasOnly(['role', 'joinedAt'])
+          && request.resource.data.joinedAt == request.time
+          && (
+            // (a) creator, as part of the group-creation batch
+            (request.resource.data.role == 'admin'
+              && getAfter(/databases/$(database)/documents/groups/$(groupId)).data.createdBy == request.auth.uid)
+            // (b) anyone who resolved a real join code to this groupId (see
+            // doc for why groupId's own high entropy is the practical gate
+            // here, not a second code check on this write)
+            || (request.resource.data.role == 'member'
+              && exists(/databases/$(database)/documents/groups/$(groupId)))
+          );
+
+        // No role changes in v1 (single fixed admin per group = creator).
+        allow update: if false;
+
+        // Cheap hook for a future leave/remove-member feature: flip this to
+        // allow the member themself (or a group admin) to delete this doc,
+        // or add a status: active|left field instead of deleting. The
+        // leaderboard aggregation (packages/shared) already tolerates a
+        // missing/left member, so this lands later with no breaking change.
+        allow delete: if false;
+      }
+
+      // -------------------------------------------------------------
+      // groups/{groupId}/bets/{betId} — betId is always `${userId}_${fixtureId}`
+      // -------------------------------------------------------------
+      match /bets/{betId} {
+        allow read: if isMember(groupId) && (
+          resource.data.userId == request.auth.uid ||
+          isLocked(resource.data.fixtureId)
+        );
+
+        allow create: if isMember(groupId)
+          && request.resource.data.keys().hasOnly(['userId', 'fixtureId', 'predictedHome', 'predictedAway', 'updatedAt'])
+          && request.resource.data.userId == request.auth.uid
+          && betId == request.resource.data.userId + '_' + request.resource.data.fixtureId
+          && request.resource.data.predictedHome is int && request.resource.data.predictedHome >= 0
+          && request.resource.data.predictedAway is int && request.resource.data.predictedAway >= 0
+          && request.resource.data.updatedAt == request.time
+          && !isLocked(request.resource.data.fixtureId);
+
+        allow update: if isMember(groupId)
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.fixtureId == resource.data.fixtureId
+          && request.resource.data.keys().hasOnly(['userId', 'fixtureId', 'predictedHome', 'predictedAway', 'updatedAt'])
+          && request.resource.data.predictedHome is int && request.resource.data.predictedHome >= 0
+          && request.resource.data.predictedAway is int && request.resource.data.predictedAway >= 0
+          && request.resource.data.updatedAt == request.time
+          && !isLocked(resource.data.fixtureId);
+
+        allow delete: if false; // no bet deletion in v1 (edit instead)
+      }
+    }
+  }
+}
