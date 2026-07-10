@@ -1,4 +1,4 @@
-import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, collectionGroup, doc, getDoc, getDocs, query, serverTimestamp, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { RulesTestEnvironment } from '@firebase/rules-unit-testing';
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
@@ -141,6 +141,96 @@ describe('groups/{groupId}/bets/{betId} rules', () => {
         predictedAway: 3,
         updatedAt: serverTimestamp(),
       })
+    );
+  });
+
+  it('rejects a negative predictedHome/predictedAway', async () => {
+    const memberDb = modularFirestore(testEnv.authenticatedContext(MEMBER_UID));
+
+    await assertFails(
+      setDoc(doc(memberDb, 'groups', GROUP_ID, 'bets', `${MEMBER_UID}_${FUTURE_FIXTURE}`), {
+        userId: MEMBER_UID,
+        fixtureId: FUTURE_FIXTURE,
+        predictedHome: -1,
+        predictedAway: 0,
+        updatedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it('rejects a non-integer predictedHome/predictedAway', async () => {
+    const memberDb = modularFirestore(testEnv.authenticatedContext(MEMBER_UID));
+
+    await assertFails(
+      setDoc(doc(memberDb, 'groups', GROUP_ID, 'bets', `${MEMBER_UID}_${FUTURE_FIXTURE}`), {
+        userId: MEMBER_UID,
+        fixtureId: FUTURE_FIXTURE,
+        predictedHome: 1.5,
+        predictedAway: 0,
+        updatedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it('rejects a client-spoofed updatedAt that is not request.time', async () => {
+    const memberDb = modularFirestore(testEnv.authenticatedContext(MEMBER_UID));
+
+    await assertFails(
+      setDoc(doc(memberDb, 'groups', GROUP_ID, 'bets', `${MEMBER_UID}_${FUTURE_FIXTURE}`), {
+        userId: MEMBER_UID,
+        fixtureId: FUTURE_FIXTURE,
+        predictedHome: 1,
+        predictedAway: 0,
+        updatedAt: Timestamp.fromMillis(Date.now() - 999_999_999), // spoofed, not serverTimestamp()
+      })
+    );
+  });
+
+  it('rejects changing fixtureId on update, even to another valid unlocked fixture', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(adminDb, 'groups', GROUP_ID, 'bets', `${ADMIN_UID}_${FUTURE_FIXTURE}`), {
+        fixtureId: PAST_FIXTURE,
+      })
+    );
+  });
+
+  it('rejects changing userId on update (cannot adopt someone else\'s bet)', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(adminDb, 'groups', GROUP_ID, 'bets', `${ADMIN_UID}_${FUTURE_FIXTURE}`), {
+        userId: MEMBER_UID,
+      })
+    );
+  });
+
+  it('denies a non-owner member from reading pre-kickoff bets via a full collection list, a where-filtered query, or a collectionGroup query', async () => {
+    const memberDb = modularFirestore(testEnv.authenticatedContext(MEMBER_UID));
+
+    // Firestore denies the entire list request when the rule can't be proven
+    // satisfied for every document in the potential result set (it does not
+    // silently filter out the disallowed docs) - verified empirically here,
+    // not assumed from docs, since this is the crux of the pre-kickoff
+    // bet-privacy guarantee for any list/query read path the app might use.
+    await assertFails(getDocs(collection(memberDb, 'groups', GROUP_ID, 'bets')));
+    await assertFails(
+      getDocs(query(collection(memberDb, 'groups', GROUP_ID, 'bets'), where('fixtureId', '==', FUTURE_FIXTURE)))
+    );
+    // No collectionGroup match rule exists for `bets` at all (only the nested
+    // groups/{groupId}/bets match) - confirms a collectionGroup('bets') query
+    // can't be used as a bypass path either.
+    await assertFails(
+      getDocs(query(collectionGroup(memberDb, 'bets'), where('fixtureId', '==', FUTURE_FIXTURE)))
+    );
+  });
+
+  it('lets a member list bets for a fixture once it is locked (post-kickoff), same query shape', async () => {
+    const memberDb = modularFirestore(testEnv.authenticatedContext(MEMBER_UID));
+
+    await assertSucceeds(
+      getDocs(query(collection(memberDb, 'groups', GROUP_ID, 'bets'), where('fixtureId', '==', PAST_FIXTURE)))
     );
   });
 });

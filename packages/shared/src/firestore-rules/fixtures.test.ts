@@ -85,4 +85,41 @@ describe('fixtures/{fixtureId} update rules', () => {
       })
     );
   });
+
+  it('denies a fully unaffiliated authenticated user (no competitionAdmins grant on any group) from writing scores', async () => {
+    // Distinguishes the documented accepted risk ("any group-admin of ANY
+    // group on the competition can correct it") from the strictly broader,
+    // NOT-accepted possibility ("any authenticated user can correct it").
+    const randomDb = modularFirestore(testEnv.authenticatedContext('totally-unaffiliated-uid'));
+
+    await assertFails(
+      updateDoc(doc(randomDb, 'fixtures', FIXTURE_ID), {
+        status: 'FINISHED',
+        homeScore: 9,
+        awayScore: 9,
+      })
+    );
+  });
+
+  it('confirms the accepted risk exactly as documented: an admin of Group A CAN correct a fixture also used by Group B', async () => {
+    const OTHER_GROUP_ID = 'group-2';
+    const OTHER_GROUP_ADMIN_UID = 'other-group-admin-uid';
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = modularFirestore(context);
+      // A second, unrelated group on the SAME shared competition.
+      await seedGroup(db, { groupId: OTHER_GROUP_ID, competitionId: COMPETITION_ID, createdBy: OTHER_GROUP_ADMIN_UID });
+    });
+
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+    // ADMIN_UID (Group 1's admin) can correct the shared fixture even though
+    // Group 2 (created by a different admin) also uses this competition.
+    await assertSucceeds(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), {
+        status: 'FINISHED',
+        homeScore: 2,
+        awayScore: 1,
+      })
+    );
+  });
 });

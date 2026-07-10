@@ -1,9 +1,9 @@
-import { doc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
+import { doc, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest';
 import type { RulesTestEnvironment } from '@firebase/rules-unit-testing';
 import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 
-import { createTestEnv, modularFirestore, seedCompetition } from './setup';
+import { createTestEnv, modularFirestore, seedCompetition, seedGroup } from './setup';
 
 const PROJECT_ID = 'goalmates-rules-test-group-creation';
 const COMPETITION_ID = 'comp-1';
@@ -173,5 +173,78 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     });
 
     await assertFails(secondBatch.commit());
+  });
+
+  it('denies replaying an already-committed group-creation batch (idempotency / re-entrancy)', async () => {
+    const groupId = 'group-replay';
+    const joinCode = 'REPLAY1';
+
+    const db = modularFirestore(testEnv.authenticatedContext(UID));
+    const makeBatch = () => {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'groups', groupId), {
+        name: 'Replay Group',
+        competitionId: COMPETITION_ID,
+        createdBy: UID,
+        createdAt: serverTimestamp(),
+      });
+      batch.set(doc(db, 'groups', groupId, 'members', UID), { role: 'admin', joinedAt: serverTimestamp() });
+      batch.set(doc(db, 'joinCodes', joinCode), { groupId, createdBy: UID, createdAt: serverTimestamp() });
+      batch.set(doc(db, 'competitionAdmins', `${COMPETITION_ID}_${UID}`), {
+        competitionId: COMPETITION_ID,
+        userId: UID,
+        groupId,
+        grantedAt: serverTimestamp(),
+      });
+      return batch;
+    };
+
+    await assertSucceeds(makeBatch().commit());
+    // A replay of the identical batch: the members/{uid} doc already exists,
+    // so this second write is an *update* to it, which is unconditionally
+    // denied (`allow update: if false`) - failing that one document fails
+    // the whole atomic batch, so replay can't create any duplicate or
+    // conflicting state.
+    await assertFails(makeBatch().commit());
+  });
+
+  it('denies a member adding ANOTHER user as a group member (self-join only)', async () => {
+    const groupId = 'group-selfjoin';
+    const attackerUid = 'attacker-uid';
+    const victimUid = 'victim-uid';
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await seedGroup(modularFirestore(context), {
+        groupId,
+        competitionId: COMPETITION_ID,
+        createdBy: UID,
+        memberIds: [attackerUid],
+      });
+    });
+
+    const attackerDb = modularFirestore(testEnv.authenticatedContext(attackerUid));
+    await assertFails(
+      setDoc(doc(attackerDb, 'groups', groupId, 'members', victimUid), {
+        role: 'member',
+        joinedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it('denies a member self-promoting to admin via update (role changes are always denied)', async () => {
+    const groupId = 'group-selfpromote';
+    const attackerUid = 'attacker-uid';
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await seedGroup(modularFirestore(context), {
+        groupId,
+        competitionId: COMPETITION_ID,
+        createdBy: UID,
+        memberIds: [attackerUid],
+      });
+    });
+
+    const attackerDb = modularFirestore(testEnv.authenticatedContext(attackerUid));
+    await assertFails(updateDoc(doc(attackerDb, 'groups', groupId, 'members', attackerUid), { role: 'admin' }));
   });
 });
