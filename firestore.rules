@@ -131,7 +131,12 @@ service cloud.firestore {
         && grantId == request.resource.data.competitionId + '_' + request.auth.uid
         && request.resource.data.grantedAt == request.time
         && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.createdBy == request.auth.uid
-        && getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.competitionId == request.resource.data.competitionId;
+        // Multi-competition amendment: a group now creates one grant per
+        // entry in its competitionIds array (was a single competitionId
+        // equality check) — this grant's competitionId must be ONE OF the
+        // group's tracked competitions, not necessarily the only one. See
+        // docs/architecture-v1-amendment-multicompetition.md.
+        && request.resource.data.competitionId in getAfter(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.competitionIds;
       allow update, delete: if false;
     }
 
@@ -141,20 +146,62 @@ service cloud.firestore {
     match /groups/{groupId} {
       allow read: if isMember(groupId);
 
+      // Multi-competition amendment: competitionId (single string) became
+      // competitionIds (non-empty list, still immutable after creation, still
+      // no add-later flow) — see
+      // docs/architecture-v1-amendment-multicompetition.md.
+      //
+      // Capped at 4 entries (not 5 — see the amendment doc's exact
+      // accounting). Per entry this rule does 2 document reads: (a) the
+      // competition itself exists, and (b) `getAfter()` on the matching
+      // competitionAdmins/{competitionId}_{uid} grant, which forces the
+      // WHOLE atomic batch to fail if any entry in competitionIds doesn't
+      // get its own grant doc in the same batch (this is what makes "a
+      // partial batch missing one of the N grants is denied" hold — without
+      // it, a batch could create a group claiming 2 competitions while only
+      // writing 1 grant, silently under-granting). Plus 1 read for the
+      // creator's own admin-membership getAfter() below. At N=4: 2*4+1 = 9
+      // reads here, +1 (members rule) +2 (joinCode rule) +2*4 (each grant's
+      // own create rule) = 20 total — exactly Firestore's per-batch ceiling.
+      // N=5 would need 24, over budget, so 4 is the real, verified ceiling
+      // (still comfortably covers the realistic 2-4-competition case).
+      //
+      // Firestore rules' list comprehensions (`.all()`/`.exists()`) cannot
+      // call exists()/get() inside the predicate — confirmed empirically
+      // against the real emulator ("Function not found error: Name: [all]")
+      // before locking this in, not assumed from docs — so a fixed-bound
+      // unrolled chain is the only way to validate each element.
+      // `size() < i || (...)` short-circuits: an index beyond the actual
+      // array length is never evaluated.
       allow create: if isSignedIn()
-        && request.resource.data.keys().hasOnly(['name', 'competitionId', 'createdBy', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['name', 'competitionIds', 'createdBy', 'createdAt'])
         && request.resource.data.name is string && request.resource.data.name.size() > 0
-        && request.resource.data.competitionId is string
+        && request.resource.data.competitionIds is list
+        && request.resource.data.competitionIds.size() > 0
+        && request.resource.data.competitionIds.size() <= 4
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.createdAt == request.time
-        && exists(/databases/$(database)/documents/competitions/$(request.resource.data.competitionId))
+        && exists(/databases/$(database)/documents/competitions/$(request.resource.data.competitionIds[0]))
+        && getAfter(/databases/$(database)/documents/competitionAdmins/$(request.resource.data.competitionIds[0] + '_' + request.auth.uid)).data.userId == request.auth.uid
+        && (request.resource.data.competitionIds.size() < 2 || (
+             exists(/databases/$(database)/documents/competitions/$(request.resource.data.competitionIds[1]))
+             && getAfter(/databases/$(database)/documents/competitionAdmins/$(request.resource.data.competitionIds[1] + '_' + request.auth.uid)).data.userId == request.auth.uid
+           ))
+        && (request.resource.data.competitionIds.size() < 3 || (
+             exists(/databases/$(database)/documents/competitions/$(request.resource.data.competitionIds[2]))
+             && getAfter(/databases/$(database)/documents/competitionAdmins/$(request.resource.data.competitionIds[2] + '_' + request.auth.uid)).data.userId == request.auth.uid
+           ))
+        && (request.resource.data.competitionIds.size() < 4 || (
+             exists(/databases/$(database)/documents/competitions/$(request.resource.data.competitionIds[3]))
+             && getAfter(/databases/$(database)/documents/competitionAdmins/$(request.resource.data.competitionIds[3] + '_' + request.auth.uid)).data.userId == request.auth.uid
+           ))
         // creator's own admin-membership doc must land in this same batch
         && getAfter(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid)).data.role == 'admin';
 
-      // Only the name is editable; competitionId/createdBy are immutable
-      // (one group <-> one competition, fixed at creation — product spec §2).
+      // Only the name is editable; competitionIds/createdBy are immutable
+      // (fixed set of competitions at creation — product spec §2, amended).
       allow update: if isGroupAdmin(groupId)
-        && request.resource.data.competitionId == resource.data.competitionId
+        && request.resource.data.competitionIds == resource.data.competitionIds
         && request.resource.data.createdBy == resource.data.createdBy;
       allow delete: if false; // no group deletion in v1
 

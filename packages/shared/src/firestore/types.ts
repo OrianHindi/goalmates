@@ -13,8 +13,14 @@ export interface UserDoc {
 /** `groups/{groupId}` — Firestore auto-generated ID. */
 export interface GroupDoc {
   name: string;
-  /** Immutable after creation: one group <-> one competition, fixed. */
-  competitionId: string;
+  /**
+   * Immutable after creation: a group tracks a fixed set of competitions,
+   * chosen at creation time — see
+   * docs/architecture-v1-amendment-multicompetition.md. Was
+   * `competitionId: string` in v1; a group may now track more than one
+   * competition. Still no "add a competition later" flow — creation-time only.
+   */
+  competitionIds: string[];
   /** Immutable; the sole admin in v1. */
   createdBy: string;
   createdAt: Timestamp;

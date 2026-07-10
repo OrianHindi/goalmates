@@ -30,7 +30,7 @@ describe('fixtures/{fixtureId} update rules', () => {
       const db = modularFirestore(context);
       await seedCompetition(db, COMPETITION_ID);
       // Grants ADMIN_UID a competitionAdmins/{COMPETITION_ID}_{ADMIN_UID} doc.
-      await seedGroup(db, { groupId: GROUP_ID, competitionId: COMPETITION_ID, createdBy: ADMIN_UID, memberIds: [NON_ADMIN_UID] });
+      await seedGroup(db, { groupId: GROUP_ID, competitionIds: [COMPETITION_ID], createdBy: ADMIN_UID, memberIds: [NON_ADMIN_UID] });
       await seedFixture(db, {
         fixtureId: FIXTURE_ID,
         competitionId: COMPETITION_ID,
@@ -108,7 +108,7 @@ describe('fixtures/{fixtureId} update rules', () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       const db = modularFirestore(context);
       // A second, unrelated group on the SAME shared competition.
-      await seedGroup(db, { groupId: OTHER_GROUP_ID, competitionId: COMPETITION_ID, createdBy: OTHER_GROUP_ADMIN_UID });
+      await seedGroup(db, { groupId: OTHER_GROUP_ID, competitionIds: [COMPETITION_ID], createdBy: OTHER_GROUP_ADMIN_UID });
     });
 
     const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));

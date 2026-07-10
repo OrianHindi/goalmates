@@ -83,7 +83,13 @@ export const SEED_GROUP_JOIN_CODE = 'GM2FUN';
 export interface SeedGroup {
   groupId: string;
   name: string;
-  competitionId: string;
+  /**
+   * Multi-competition amendment (docs/architecture-v1-amendment-multicompetition.md):
+   * a group now tracks an array of competitions, fixed at creation. The demo
+   * group tracks BOTH seeded competitions so multi-competition leaderboards
+   * (per-competition and combined) are actually exercised, not theoretical.
+   */
+  competitionIds: string[];
   createdBy: string; // SeedUser.uid
   joinCode: string;
 }
@@ -91,7 +97,7 @@ export interface SeedGroup {
 export const SEED_GROUP: SeedGroup = {
   groupId: 'seed-demo-group',
   name: "The Founders League",
-  competitionId: SEED_COMPETITIONS.WC2026.competitionId,
+  competitionIds: [SEED_COMPETITIONS.WC2026.competitionId, SEED_COMPETITIONS.ISRAELI_PREMIER_LEAGUE.competitionId],
   createdBy: SEED_USERS[0].uid, // Alice is admin/creator
   joinCode: SEED_GROUP_JOIN_CODE,
 };
@@ -119,8 +125,9 @@ export interface SeedBet {
 }
 
 /** A handful of bets across the demo users on some of the FINISHED WC2026
- * fixtures, so the seeded group's leaderboard has non-zero, non-trivial
- * rows immediately after seeding. */
+ * and Israeli Premier League fixtures, so the seeded group's per-competition
+ * AND combined leaderboards both have non-zero, non-trivial rows immediately
+ * after seeding (docs/architecture-v1-amendment-multicompetition.md). */
 export const SEED_BETS: SeedBet[] = [
   { userId: 'seed-alice', fixtureId: 'wc2026-f01', predictedHome: 2, predictedAway: 1 }, // exact, 3
   { userId: 'seed-alice', fixtureId: 'wc2026-f02', predictedHome: 1, predictedAway: 0 }, // wrong direction, 0
@@ -130,5 +137,10 @@ export const SEED_BETS: SeedBet[] = [
   { userId: 'seed-bob', fixtureId: 'wc2026-f03', predictedHome: 3, predictedAway: 2 }, // exact, 3
   { userId: 'seed-carol', fixtureId: 'wc2026-f01', predictedHome: 2, predictedAway: 1 }, // exact, 3
   { userId: 'seed-carol', fixtureId: 'wc2026-f04', predictedHome: 0, predictedAway: 0 }, // exact, 3
+  // --- Israeli Premier League bets (exercise the second tracked competition) ---
+  { userId: 'seed-alice', fixtureId: 'ipl-f01', predictedHome: 2, predictedAway: 1 }, // exact, 3
+  { userId: 'seed-bob', fixtureId: 'ipl-f01', predictedHome: 1, predictedAway: 0 }, // direction, 1
+  { userId: 'seed-bob', fixtureId: 'ipl-f02', predictedHome: 1, predictedAway: 1 }, // exact, 3
+  { userId: 'seed-carol', fixtureId: 'ipl-f03', predictedHome: 3, predictedAway: 0 }, // exact, 3
   // dave has no bets at all yet — exercises the "no bet" / absent-member row.
 ];

@@ -91,21 +91,26 @@ export async function seedCompetition(db: Firestore, competitionId: string, name
 
 export interface SeedGroupArgs {
   groupId: string;
-  competitionId: string;
+  /**
+   * Multi-competition amendment: a group tracks an array of competitions.
+   * One competitionAdmins grant is created per entry, matching the real
+   * client batch shape (docs/architecture-v1-amendment-multicompetition.md).
+   */
+  competitionIds: string[];
   createdBy: string;
   memberIds?: string[]; // extra members besides createdBy, all role: 'member'
 }
 
 /**
- * Seeds a full atomic group (group + admin membership + joinCode +
- * competitionAdmins grant), bypassing rules, exactly matching the shape the
- * real client batch write produces.
+ * Seeds a full atomic group (group + admin membership + joinCode + N
+ * competitionAdmins grants, one per `competitionIds` entry), bypassing rules,
+ * exactly matching the shape the real client batch write produces.
  */
 export async function seedGroup(db: Firestore, args: SeedGroupArgs): Promise<void> {
   const batch = writeBatch(db);
   batch.set(doc(db, 'groups', args.groupId), {
     name: 'Test Group',
-    competitionId: args.competitionId,
+    competitionIds: args.competitionIds,
     createdBy: args.createdBy,
     createdAt: serverTimestamp(),
   });
@@ -119,12 +124,14 @@ export async function seedGroup(db: Firestore, args: SeedGroupArgs): Promise<voi
     createdBy: args.createdBy,
     createdAt: serverTimestamp(),
   });
-  batch.set(doc(db, 'competitionAdmins', `${args.competitionId}_${args.createdBy}`), {
-    competitionId: args.competitionId,
-    userId: args.createdBy,
-    groupId: args.groupId,
-    grantedAt: serverTimestamp(),
-  });
+  for (const competitionId of args.competitionIds) {
+    batch.set(doc(db, 'competitionAdmins', `${competitionId}_${args.createdBy}`), {
+      competitionId,
+      userId: args.createdBy,
+      groupId: args.groupId,
+      grantedAt: serverTimestamp(),
+    });
+  }
   for (const memberId of args.memberIds ?? []) {
     batch.set(doc(db, 'groups', args.groupId, 'members', memberId), {
       role: 'member',
