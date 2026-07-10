@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "GoalMates",
+    "slug": "goalmates",
+    "scheme": "goalmates",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "dev.goalmates.mobile"
+    },
+    "android": {
+      "package": "dev.goalmates.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#16a34a"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    }
+  }
+}
