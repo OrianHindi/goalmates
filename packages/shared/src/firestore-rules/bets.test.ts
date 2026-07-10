@@ -30,7 +30,7 @@ describe('groups/{groupId}/bets/{betId} rules', () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       const db = modularFirestore(context);
       await seedCompetition(db, COMPETITION_ID);
-      await seedGroup(db, { groupId: GROUP_ID, competitionId: COMPETITION_ID, createdBy: ADMIN_UID, memberIds: [MEMBER_UID] });
+      await seedGroup(db, { groupId: GROUP_ID, competitionIds: [COMPETITION_ID], createdBy: ADMIN_UID, memberIds: [MEMBER_UID] });
       await seedFixture(db, { fixtureId: PAST_FIXTURE, competitionId: COMPETITION_ID, status: 'SCHEDULED', kickoffAt: timestampMinutesFromNow(-60) });
       await seedFixture(db, { fixtureId: FUTURE_FIXTURE, competitionId: COMPETITION_ID, status: 'SCHEDULED', kickoffAt: timestampMinutesFromNow(60) });
       // A pre-existing bet by ADMIN_UID on each fixture, for read-permission tests.

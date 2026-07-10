@@ -7,6 +7,7 @@ import { createTestEnv, modularFirestore, seedCompetition, seedGroup } from './s
 
 const PROJECT_ID = 'goalmates-rules-test-group-creation';
 const COMPETITION_ID = 'comp-1';
+const COMPETITION_ID_2 = 'comp-2';
 const UID = 'creator-uid';
 const OTHER_UID = 'other-uid';
 
@@ -24,7 +25,9 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
   beforeEach(async () => {
     await testEnv.clearFirestore();
     await testEnv.withSecurityRulesDisabled(async (context) => {
-      await seedCompetition(modularFirestore(context), COMPETITION_ID);
+      const db = modularFirestore(context);
+      await seedCompetition(db, COMPETITION_ID);
+      await seedCompetition(db, COMPETITION_ID_2);
     });
   });
 
@@ -36,7 +39,7 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     const batch = writeBatch(db);
     batch.set(doc(db, 'groups', groupId), {
       name: 'Full Batch Group',
-      competitionId: COMPETITION_ID,
+      competitionIds: [COMPETITION_ID],
       createdBy: UID,
       createdAt: serverTimestamp(),
     });
@@ -59,6 +62,142 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     await assertSucceeds(batch.commit());
   });
 
+  // --- Multi-competition amendment coverage ---
+  // (docs/architecture-v1-amendment-multicompetition.md)
+
+  it('succeeds atomically for a 2-competition group: all 4 docs (group, membership, joinCode, 2 grants) land together', async () => {
+    const db = modularFirestore(testEnv.authenticatedContext(UID));
+    const groupId = 'group-multi-full-batch';
+    const joinCode = 'MULTIAB';
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'groups', groupId), {
+      name: 'Multi Competition Group',
+      competitionIds: [COMPETITION_ID, COMPETITION_ID_2],
+      createdBy: UID,
+      createdAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'groups', groupId, 'members', UID), {
+      role: 'admin',
+      joinedAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'joinCodes', joinCode), {
+      groupId,
+      createdBy: UID,
+      createdAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'competitionAdmins', `${COMPETITION_ID}_${UID}`), {
+      competitionId: COMPETITION_ID,
+      userId: UID,
+      groupId,
+      grantedAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'competitionAdmins', `${COMPETITION_ID_2}_${UID}`), {
+      competitionId: COMPETITION_ID_2,
+      userId: UID,
+      groupId,
+      grantedAt: serverTimestamp(),
+    });
+
+    await assertSucceeds(batch.commit());
+  });
+
+  it('denies a 2-competition group batch missing one of the N competitionAdmins grants (all-or-nothing)', async () => {
+    const db = modularFirestore(testEnv.authenticatedContext(UID));
+    const groupId = 'group-multi-partial-batch';
+    const joinCode = 'MULTIPARTIAL';
+
+    // Same as the successful 2-competition batch above, but the grant for
+    // COMPETITION_ID_2 is missing even though the group claims both
+    // competitions — the whole batch must fail, not just silently create a
+    // group with an incomplete set of grants.
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'groups', groupId), {
+      name: 'Partial Multi Competition Group',
+      competitionIds: [COMPETITION_ID, COMPETITION_ID_2],
+      createdBy: UID,
+      createdAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'groups', groupId, 'members', UID), {
+      role: 'admin',
+      joinedAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'joinCodes', joinCode), {
+      groupId,
+      createdBy: UID,
+      createdAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'competitionAdmins', `${COMPETITION_ID}_${UID}`), {
+      competitionId: COMPETITION_ID,
+      userId: UID,
+      groupId,
+      grantedAt: serverTimestamp(),
+    });
+    // Deliberately no grant for COMPETITION_ID_2.
+
+    await assertFails(batch.commit());
+  });
+
+  it('denies a group create with an empty competitionIds array', async () => {
+    const db = modularFirestore(testEnv.authenticatedContext(UID));
+    const groupId = 'group-empty-competitions';
+
+    await assertFails(
+      setDoc(doc(db, 'groups', groupId), {
+        name: 'Empty Competitions Group',
+        competitionIds: [],
+        createdBy: UID,
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it('denies a group create referencing a nonexistent competitionId anywhere in the array', async () => {
+    const db = modularFirestore(testEnv.authenticatedContext(UID));
+    const groupId = 'group-bad-competition';
+
+    await assertFails(
+      setDoc(doc(db, 'groups', groupId), {
+        name: 'Bad Competition Group',
+        competitionIds: [COMPETITION_ID, 'does-not-exist'],
+        createdBy: UID,
+        createdAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it('denies a competitionAdmins grant whose competitionId is not one of the group.competitionIds', async () => {
+    const db = modularFirestore(testEnv.authenticatedContext(UID));
+    const groupId = 'group-grant-mismatch';
+    const joinCode = 'MISMATCH1';
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'groups', groupId), {
+      name: 'Mismatch Group',
+      competitionIds: [COMPETITION_ID], // only tracks COMPETITION_ID
+      createdBy: UID,
+      createdAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'groups', groupId, 'members', UID), {
+      role: 'admin',
+      joinedAt: serverTimestamp(),
+    });
+    batch.set(doc(db, 'joinCodes', joinCode), {
+      groupId,
+      createdBy: UID,
+      createdAt: serverTimestamp(),
+    });
+    // Grant claims COMPETITION_ID_2, which this group does NOT track.
+    batch.set(doc(db, 'competitionAdmins', `${COMPETITION_ID_2}_${UID}`), {
+      competitionId: COMPETITION_ID_2,
+      userId: UID,
+      groupId,
+      grantedAt: serverTimestamp(),
+    });
+
+    await assertFails(batch.commit());
+  });
+
   it('denies a lone groups/{groupId} write with no sibling admin-membership doc', async () => {
     const db = modularFirestore(testEnv.authenticatedContext(UID));
     const groupId = 'group-partial-1';
@@ -66,7 +205,7 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     await assertFails(
       setDoc(doc(db, 'groups', groupId), {
         name: 'Partial Group',
-        competitionId: COMPETITION_ID,
+        competitionIds: [COMPETITION_ID],
         createdBy: UID,
         createdAt: serverTimestamp(),
       })
@@ -122,7 +261,7 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     const firstBatch = writeBatch(firstDb);
     firstBatch.set(doc(firstDb, 'groups', groupId1), {
       name: 'First Group',
-      competitionId: COMPETITION_ID,
+      competitionIds: [COMPETITION_ID],
       createdBy: UID,
       createdAt: serverTimestamp(),
     });
@@ -152,7 +291,7 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     const secondBatch = writeBatch(secondDb);
     secondBatch.set(doc(secondDb, 'groups', groupId2), {
       name: 'Second Group',
-      competitionId: COMPETITION_ID,
+      competitionIds: [COMPETITION_ID],
       createdBy: OTHER_UID,
       createdAt: serverTimestamp(),
     });
@@ -184,7 +323,7 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
       const batch = writeBatch(db);
       batch.set(doc(db, 'groups', groupId), {
         name: 'Replay Group',
-        competitionId: COMPETITION_ID,
+        competitionIds: [COMPETITION_ID],
         createdBy: UID,
         createdAt: serverTimestamp(),
       });
@@ -216,7 +355,7 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await seedGroup(modularFirestore(context), {
         groupId,
-        competitionId: COMPETITION_ID,
+        competitionIds: [COMPETITION_ID],
         createdBy: UID,
         memberIds: [attackerUid],
       });
@@ -238,7 +377,7 @@ describe('atomic group creation (groups + members + joinCodes + competitionAdmin
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await seedGroup(modularFirestore(context), {
         groupId,
-        competitionId: COMPETITION_ID,
+        competitionIds: [COMPETITION_ID],
         createdBy: UID,
         memberIds: [attackerUid],
       });

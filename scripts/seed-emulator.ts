@@ -109,7 +109,7 @@ async function seedDemoGroup(): Promise<void> {
   const groupRef = db.collection('groups').doc(SEED_GROUP.groupId);
   batch.set(groupRef, {
     name: SEED_GROUP.name,
-    competitionId: SEED_GROUP.competitionId,
+    competitionIds: SEED_GROUP.competitionIds,
     createdBy: SEED_GROUP.createdBy,
     createdAt: Timestamp.now(),
   });
@@ -129,18 +129,25 @@ async function seedDemoGroup(): Promise<void> {
     createdAt: Timestamp.now(),
   });
 
-  // Only the creator/admin gets a competitionAdmins grant — v1 has exactly
-  // one admin per group (see architecture-v1.md §2).
-  const grantRef = db.collection('competitionAdmins').doc(`${SEED_GROUP.competitionId}_${SEED_GROUP.createdBy}`);
-  batch.set(grantRef, {
-    competitionId: SEED_GROUP.competitionId,
-    userId: SEED_GROUP.createdBy,
-    groupId: SEED_GROUP.groupId,
-    grantedAt: Timestamp.now(),
-  });
+  // Multi-competition amendment: one competitionAdmins grant per entry in
+  // SEED_GROUP.competitionIds, not just one — the creator/admin gets a grant
+  // for EVERY competition the group tracks (see
+  // docs/architecture-v1-amendment-multicompetition.md). v1 still has
+  // exactly one admin per group, so all grants go to the same creator uid.
+  for (const competitionId of SEED_GROUP.competitionIds) {
+    const grantRef = db.collection('competitionAdmins').doc(`${competitionId}_${SEED_GROUP.createdBy}`);
+    batch.set(grantRef, {
+      competitionId,
+      userId: SEED_GROUP.createdBy,
+      groupId: SEED_GROUP.groupId,
+      grantedAt: Timestamp.now(),
+    });
+  }
 
   await batch.commit();
-  console.log(`  wrote demo group "${SEED_GROUP.name}" (join code ${SEED_GROUP.joinCode}, ${SEED_GROUP_MEMBERS.length} members)`);
+  console.log(
+    `  wrote demo group "${SEED_GROUP.name}" (join code ${SEED_GROUP.joinCode}, ${SEED_GROUP_MEMBERS.length} members, ${SEED_GROUP.competitionIds.length} competitions/grants)`
+  );
 }
 
 async function seedBets(): Promise<void> {

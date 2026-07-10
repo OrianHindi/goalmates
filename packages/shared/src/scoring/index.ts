@@ -110,6 +110,21 @@ function toFixtureResult(fixture: LeaderboardFixture): FixtureResult {
  * Tolerates a member with no bets, and only ever iterates the `members`
  * array it's given — a caller that filters out a left/removed member later
  * doesn't require any change here (architecture-v1.md §2's "cheap hook").
+ *
+ * **Multi-competition groups** (docs/architecture-v1-amendment-multicompetition.md):
+ * this function's signature is unchanged and stays competition-agnostic —
+ * it has no opinion on which competition a fixture belongs to. A caller
+ * renders:
+ *   - a **per-competition** leaderboard by filtering `fixtures` down to that
+ *     one competition's fixtures before calling this function (e.g.
+ *     `fixtures.filter(f => f.competitionId === targetCompetitionId)`), and
+ *   - the **combined** leaderboard by calling it again with every fixture
+ *     across all of the group's tracked competitions (no filter).
+ * This is the smallest-change option: it keeps scoring pure/Firebase-free
+ * and needs zero changes here, at the cost of the caller doing the
+ * filtering and calling this function twice (once per competition tab, once
+ * for "combined") — a cheap, obviously-correct client-side operation on data
+ * already in memory, not worth a scoring-engine API change.
  */
 export function computeLeaderboard(
   members: LeaderboardMember[],
