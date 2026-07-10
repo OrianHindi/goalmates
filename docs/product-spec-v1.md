@@ -1,6 +1,6 @@
 # GoalMates — Product Spec v1
 
-For-fun soccer prediction league for the founder and their friends. Points only. Mobile-only client (iPhone + Android via Expo/React Native); backend is API-only, no web pages.
+For-fun soccer prediction league for the founder and their friends. Points only. Mobile-only client (iPhone + Android via Expo/React Native); the app talks directly to Firebase (Firestore + Firebase Auth) — no custom API server, no web pages.
 
 ## 1. What GoalMates is / is not
 
@@ -12,7 +12,7 @@ For-fun soccer prediction league for the founder and their friends. Points only.
 - No per-group scoring configuration — scoring rules are fixed (see §4).
 - No push notifications.
 - No real fixture-data API — fixtures come from a seeded stub (flagged founder action for later).
-- No real auth — local dev-stub with seeded users, behind a swappable interface (per standing rule 8).
+- No real Google Sign-In yet — v1 uses Firebase Auth via the local Emulator Suite with seeded test users for local dev. Enabling real Google Sign-In is a founder action (creating the Firebase project) and drops in as pure config, no code changes.
 
 ## 2. Users & roles
 
@@ -28,10 +28,10 @@ Decisions (PM default unless noted):
 
 ## 3. Screens & flows (mobile)
 
-**Login (dev-stub user picker)**
-- Purpose: pick a seeded user to act as (stands in for real auth).
-- Elements: list of seeded users; tap to enter.
-- Behind the swappable auth interface — replacing it must not touch other screens.
+**Login (Firebase Auth, emulator-backed in dev)**
+- Purpose: sign in via Firebase Auth; in dev this is emulator-backed (e.g. sign-in with seeded test accounts, or anonymous auth for local testing).
+- Elements: sign-in action (seeded test account or anonymous, per emulator setup); tap to enter.
+- Swappable to real Google Sign-In later purely via Firebase project config — no other screens change.
 
 **Home / groups list**
 - Purpose: entry point; all my groups.
@@ -76,8 +76,8 @@ Per finished fixture, per member:
 | Phase | Rule |
 |---|---|
 | Before kickoff | One bet per user per fixture: predicted home + away score (non-negative integers). Create/edit freely. |
-| Lock | At kickoff, per **server clock** — server rejects create/edit at/after kickoff regardless of client time or UI state. |
-| Visibility | My bet hidden from other group members until kickoff (API-enforced, not just UI); visible to everyone after. |
+| Lock | At kickoff, per **Firestore server time** — Firestore security rules reject create/edit at/after kickoff regardless of client time or UI state. |
+| Visibility | My bet hidden from other group members until kickoff (enforced by Firestore security rules, not just UI); visible to everyone after. |
 | After kickoff, no result yet | Bet read-only, all group bets visible, no points yet. |
 | Result entered | Points per §4 shown on the fixture and in the leaderboard. |
 | Result corrected | Points recompute automatically for all members. |
@@ -85,16 +85,16 @@ Per finished fixture, per member:
 
 ## 6. Acceptance criteria (QA checklist)
 
-- [ ] Dev-stub login: can act as any seeded user; auth is behind a swappable interface.
+- [ ] Login: can sign in via Firebase Auth Emulator with a seeded test account; swapping to real Google Sign-In later is a config-only change (no code changes).
 - [ ] Create group: pick competition, receive shareable join code; creator is admin.
 - [ ] Join by code works; invalid code gives a clear error; a user can be in multiple groups.
-- [ ] Bet create/edit before kickoff succeeds; attempt at/after kickoff is rejected **by the API** (server clock), even if the UI would allow it.
-- [ ] Pre-kickoff, API responses to member A never contain member B's bet values for that fixture; post-kickoff they do.
+- [ ] Bet create/edit before kickoff succeeds; attempt at/after kickoff is rejected **by Firestore security rules** (server time), even if the UI would allow it.
+- [ ] Pre-kickoff, Firestore reads for member A never return member B's bet values for that fixture; post-kickoff they do.
 - [ ] Scoring: exact → 3; direction-only (incl. draw-vs-different-draw) → 1; wrong → 0; no bet → 0. Verified against seeded fixtures.
 - [ ] Admin (only) can enter a final score and later correct it; leaderboard and per-fixture points reflect the correction with no manual step.
 - [ ] Leaderboard shows exactly: total points, exact hits, correct directions — ranked with the §3 tie-break.
 - [ ] Empty states render: no groups, no bets, no finished fixtures.
-- [ ] Runs fully locally (stub fixtures + stub auth); nothing requires a cloud account or paid service.
+- [ ] Runs fully locally (stub fixtures + Firebase Auth Emulator); nothing requires a cloud account or paid service.
 
 ## Open questions (founder)
 
