@@ -10,7 +10,8 @@
     "./scoring": "./src/scoring/index.ts",
     "./firestore": "./src/firestore/index.ts",
     "./auth": "./src/auth/index.ts",
-    "./seed": "./src/seed/index.ts"
+    "./seed": "./src/seed/index.ts",
+    "./fixtures": "./src/fixtures/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",

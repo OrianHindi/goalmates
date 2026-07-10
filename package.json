@@ -11,6 +11,7 @@
     "build": "pnpm -r --if-present run build",
     "emulators": "firebase emulators:start",
     "seed": "tsx scripts/seed-emulator.ts",
+    "sync-fixtures": "tsx scripts/sync-fixtures.ts",
     "dev:mobile": "pnpm --filter @goalmates/mobile start",
     "test:rules": "firebase emulators:exec --only firestore,auth \"pnpm --filter @goalmates/shared run test:rules\""
   },

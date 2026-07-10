@@ -620,3 +620,101 @@ this adds zero new CI secrets.
 Everything above needs the founder for is already flagged in §1 and §6
 (root `package.json` scripts, the CI step itself, real Google Sign-In
 credentials) — nothing new beyond those.
+
+## 8. Fixture sync
+
+Fixture data (times, teams, reschedules, and eventually real scores) needs
+to be kept current without a server to run a cron job inside — v1 has no
+server and no Cloud Functions at all (§0). The mechanism: a **GitHub
+Actions scheduled workflow** (`.github/workflows/fixture-sync.yml`) running
+a Node script (`scripts/sync-fixtures.ts`) that writes into Firestore via
+the Admin SDK, on the same rules-bypass path `scripts/seed-emulator.ts`
+already uses.
+
+**Why GitHub Actions cron instead of Cloud Functions**: Cloud Functions'
+scheduler (Cloud Scheduler + Pub/Sub trigger) requires the paid Blaze plan
+— exactly the cost §0 designed around avoiding. A GitHub Actions scheduled
+workflow needs no Firebase plan upgrade at all; it's a plain script run on
+a timer, authenticating to Firestore the same way the seed script does.
+
+**The interface boundary**: `packages/shared/src/fixtures/` defines
+`FixtureSyncProvider` (one method, `syncFixtures(competitionId):
+Promise<FixtureUpdate[]>`) and ships one implementation,
+`StubFixtureSyncProvider`, which re-applies the existing seed fixture data
+(`packages/shared/src/seed/data.ts`) instead of calling a real API — there
+is no real fixture-data API key yet (creating a football-data.org, or
+equivalent, account is a separate founder action, not part of this build).
+This is the same swappable-integration-stub pattern already used for
+`AuthProvider` (§6): `scripts/sync-fixtures.ts` only ever depends on the
+`FixtureSyncProvider` interface, so swapping the stub for a real provider
+is a one-line change at its construction site, not a call-site rewrite.
+
+**Founder action for later, to swap in the real provider**:
+1. Create a football-data.org (or equivalent) account and get an API key.
+2. Add it as the `FIXTURE_API_KEY` repo secret.
+3. Add the `FIREBASE_SERVICE_ACCOUNT` repo secret (see below).
+4. Implement `RealFixtureSyncProvider` in
+   `packages/shared/src/fixtures/`, reading its key from the
+   `FIXTURE_API_KEY` env var, and swap it in at
+   `scripts/sync-fixtures.ts`'s `new StubFixtureSyncProvider()` call site
+   — marked there and in `stub-provider.ts` with a
+   `// TODO(founder): swap in RealFixtureSyncProvider once API key exists`
+   comment.
+
+**Idempotency guarantee** (this script runs every 30-60 min forever, so it
+must be safe to run repeatedly): for each fixture the provider reports,
+`scripts/sync-fixtures.ts`'s `applyFixtureUpdate`:
+- Creates the Firestore doc if it doesn't exist yet.
+- **Never touches a fixture once its `status` is `FINISHED`** — a finished
+  fixture's score is treated as a fixed point once set, whether it got
+  there via the seed script, a prior sync, or a group-admin's manual
+  in-app correction. This is what protects final scores from being
+  clobbered by a stale re-sync.
+- For a still-`SCHEDULED` fixture, only writes fields that actually
+  differ from what's stored, and deliberately excludes `kickoffAt` from
+  this comparison for the stub specifically — `StubFixtureSyncProvider`
+  recomputes `kickoffAt` relative to "now" on every call (same
+  offset-from-now trick the seed data already uses), so writing it back
+  every run would look like a reschedule on every single run. A
+  `RealFixtureSyncProvider` reporting a genuine reschedule (an absolute
+  wall-clock change from the real upstream source) should reinstate
+  `kickoffAt` into that comparison.
+- Net effect, verified manually against the Firestore emulator: seeding,
+  then running the sync script twice back-to-back, produces byte-identical
+  Firestore state after both runs (0 created/0 updated the second time),
+  and a manually-corrected `FINISHED` score survives a subsequent sync
+  unchanged.
+
+**Emulator-vs-real-project conditional**: there is no real Firebase
+project yet, so `.github/workflows/fixture-sync.yml`'s real-project step
+is gated on `secrets.FIREBASE_SERVICE_ACCOUNT != ''` — a GitHub Actions
+secret reference is an empty string when the secret doesn't exist, so this
+condition is always valid and the step is skipped entirely right now. **No
+GitHub secret is required for this workflow, or its CI, to pass.** The
+default path instead runs the sync script against a throwaway Firestore
+emulator instance spun up and torn down inside the job itself, via
+`firebase emulators:exec` (the exact pattern `ci.yml`'s rules-test step
+already uses) — seeding first, then running the sync script twice, so the
+workflow is fully green and meaningfully exercises both fixture creation
+and idempotency with zero real credentials. `scripts/sync-fixtures.ts`
+itself decides emulator-vs-real by checking whether
+`GOOGLE_APPLICATION_CREDENTIALS` is set (real mode) or not (emulator
+mode, matching `scripts/seed-emulator.ts`'s existing `FIRESTORE_EMULATOR_HOST`
+default). The moment the founder adds the `FIREBASE_SERVICE_ACCOUNT`
+secret, the real-project step activates with no other code change.
+
+**Cron interval — every 60 minutes** (`0 * * * *`): picked over the tighter
+end of the 30-60 min range because this repo is **private**, so GitHub
+Actions minutes are not unlimited-free the way they are on a public repo —
+they draw down the account's monthly free-tier minutes. Hourly is still
+fresh enough for a friends' hobby app, and roughly halves the CI-minutes
+footprint of the emulator-validated default path above versus a 30-minute
+cadence. Worth revisiting once the real-project path is active, since a
+real sync run has no JVM/emulator startup cost and is much cheaper per
+run.
+
+**Open question, deliberately not resolved here** (tracked in
+`docs/product-spec-v1.md`'s "Open questions (founder)"): if a fixture's
+kickoff time changes (a reschedule) after group members have already
+placed bets on it, should their existing bets be kept as-is, or should
+members be warned/notified?
