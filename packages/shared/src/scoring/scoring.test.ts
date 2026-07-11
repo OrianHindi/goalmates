@@ -115,4 +115,31 @@ describe('computeLeaderboard', () => {
       expect(s.directionCount).toBe(0);
     }
   });
+
+  // Live-score amendment (docs/architecture-v1-amendment-livescore.md §2):
+  // a LIVE fixture must contribute exactly 0 points, even though it carries
+  // a non-null running score that would score as an exact/direction hit if
+  // it were mistakenly treated as final. This is the regression test for
+  // that -- it fails if `computeLeaderboard`'s FINISHED filter or
+  // `toFixtureResult`'s status mapping is ever narrowed back to a hardcoded
+  // SCHEDULED/FINISHED pair that doesn't know about LIVE.
+  it('gives a LIVE fixture zero points for everyone, even an exact-matching bet on its running score', () => {
+    const liveFixtures: LeaderboardFixture[] = [
+      { fixtureId: 'f1', status: 'FINISHED', homeScore: 2, awayScore: 1 },
+      { fixtureId: 'f4', status: 'LIVE', homeScore: 1, awayScore: 0 }, // running score, match in progress
+    ];
+    const bets: LeaderboardBet[] = [
+      { userId: 'alice', fixtureId: 'f1', predictedHome: 2, predictedAway: 1 }, // exact -> 3 pts
+      { userId: 'alice', fixtureId: 'f4', predictedHome: 1, predictedAway: 0 }, // would be exact IF scored, but must not be
+    ];
+
+    const standings = computeLeaderboard(members, bets, liveFixtures);
+    const alice = standings.find((s) => s.userId === 'alice')!;
+
+    // Only f1's 3 points count; f4 (LIVE) contributes nothing despite the
+    // bet matching the current running score exactly.
+    expect(alice.totalPoints).toBe(3);
+    expect(alice.exactCount).toBe(1);
+    expect(alice.directionCount).toBe(0);
+  });
 });
