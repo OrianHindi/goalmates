@@ -39,7 +39,14 @@ export interface CompetitionDoc {
   name: string;
 }
 
-export type FixtureStatus = 'SCHEDULED' | 'FINISHED';
+/**
+ * `SCHEDULED` → not yet kicked off (scores null). `LIVE` → in progress; the
+ * automatic score-sync job updates homeScore/awayScore repeatedly while the
+ * match is played (see docs/architecture-v1-amendment-livescore.md). `FINISHED`
+ * → full-time; scores are the final result. LIVE was added by the live-score
+ * amendment; the older `SCHEDULED | FINISHED` model is superseded by this.
+ */
+export type FixtureStatus = 'SCHEDULED' | 'LIVE' | 'FINISHED';
 
 /**
  * `fixtures/{fixtureId}` — top-level collection (not nested under
@@ -52,9 +59,9 @@ export interface FixtureDoc {
   /** Immutable once created — see architecture-v1.md §2/§3. */
   kickoffAt: Timestamp;
   status: FixtureStatus;
-  /** null until FINISHED. */
+  /** null while SCHEDULED; a running (LIVE) or final (FINISHED) tally otherwise. */
   homeScore: number | null;
-  /** null until FINISHED. */
+  /** null while SCHEDULED; a running (LIVE) or final (FINISHED) tally otherwise. */
   awayScore: number | null;
   /** For a future real fixture-data provider; unused in v1. */
   externalRef: string | null;

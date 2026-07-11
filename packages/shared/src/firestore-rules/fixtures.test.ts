@@ -101,6 +101,122 @@ describe('fixtures/{fixtureId} update rules', () => {
     );
   });
 
+  // ---------------------------------------------------------------
+  // Live-score amendment (docs/architecture-v1-amendment-livescore.md):
+  // LIVE is a new status whose scores are non-null ints and freely mutable
+  // by a competitionAdmins grant holder (the sync job's rules-bypass Admin
+  // SDK path doesn't hit these rules; the client-facing surface here is the
+  // manual admin override, which shares this rule). These tests also pin
+  // that the amendment did NOT weaken FINISHED's score-shape guarantee or
+  // kickoffAt immutability.
+  // ---------------------------------------------------------------
+
+  it('lets a competitionAdmin move a fixture SCHEDULED -> LIVE with a non-negative in-progress score', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertSucceeds(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), {
+        status: 'LIVE',
+        homeScore: 1,
+        awayScore: 0,
+      })
+    );
+  });
+
+  it('lets a competitionAdmin repeatedly change a LIVE fixture score (running score is mutable)', async () => {
+    // Seed the fixture as already LIVE with a score, then bump it — this is
+    // what every sync poll does while the match is played.
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = modularFirestore(context);
+      await seedFixture(db, {
+        fixtureId: FIXTURE_ID,
+        competitionId: COMPETITION_ID,
+        status: 'LIVE',
+        kickoffAt: timestampMinutesFromNow(-30), // kicked off 30 min ago
+        homeScore: 1,
+        awayScore: 0,
+      });
+    });
+
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+    await assertSucceeds(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), { status: 'LIVE', homeScore: 2, awayScore: 1 })
+    );
+  });
+
+  it('denies a LIVE update with null scores (LIVE must carry a running score)', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), {
+        status: 'LIVE',
+        homeScore: null,
+        awayScore: null,
+      })
+    );
+  });
+
+  it('denies a LIVE update with a negative score', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), {
+        status: 'LIVE',
+        homeScore: -1,
+        awayScore: 0,
+      })
+    );
+  });
+
+  it('denies a non-admin (no competitionAdmins grant) writing a LIVE score', async () => {
+    const nonAdminDb = modularFirestore(testEnv.authenticatedContext(NON_ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(nonAdminDb, 'fixtures', FIXTURE_ID), {
+        status: 'LIVE',
+        homeScore: 1,
+        awayScore: 0,
+      })
+    );
+  });
+
+  it('still denies changing kickoffAt on a SCHEDULED -> LIVE transition (immutability not weakened by LIVE)', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), {
+        status: 'LIVE',
+        homeScore: 0,
+        awayScore: 0,
+        kickoffAt: timestampMinutesFromNow(-999), // retroactive kickoff move — must still be rejected
+      })
+    );
+  });
+
+  it('still requires non-null int scores for FINISHED (FINISHED shape guarantee intact)', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), {
+        status: 'FINISHED',
+        homeScore: null,
+        awayScore: null,
+      })
+    );
+  });
+
+  it('denies an unknown status value (only SCHEDULED/LIVE/FINISHED are valid)', async () => {
+    const adminDb = modularFirestore(testEnv.authenticatedContext(ADMIN_UID));
+
+    await assertFails(
+      updateDoc(doc(adminDb, 'fixtures', FIXTURE_ID), {
+        status: 'IN_PROGRESS', // not a member of the allowed enum
+        homeScore: 1,
+        awayScore: 0,
+      })
+    );
+  });
+
   it('confirms the accepted risk exactly as documented: an admin of Group A CAN correct a fixture also used by Group B', async () => {
     const OTHER_GROUP_ID = 'group-2';
     const OTHER_GROUP_ADMIN_UID = 'other-group-admin-uid';

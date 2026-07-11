@@ -65,7 +65,7 @@ export interface SeedFixtureArgs {
   fixtureId: string;
   competitionId: string;
   kickoffAt: Timestamp;
-  status: 'SCHEDULED' | 'FINISHED';
+  status: 'SCHEDULED' | 'LIVE' | 'FINISHED';
   homeScore?: number | null;
   awayScore?: number | null;
 }
