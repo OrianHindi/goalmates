@@ -84,6 +84,21 @@ service cloud.firestore {
       // Only status/homeScore/awayScore may change. Identity fields
       // (especially kickoffAt) are pinned immutable so a competition-admin
       // can never move kickoff to retroactively unlock or re-lock bets.
+      //
+      // Live-score amendment (docs/architecture-v1-amendment-livescore.md):
+      // LIVE joins the status set. Score shape is now keyed off SCHEDULED
+      // vs. not-SCHEDULED, not FINISHED vs. not-FINISHED:
+      //   - SCHEDULED  -> both scores MUST be null (not kicked off yet).
+      //   - LIVE       -> both scores are non-negative ints, freely mutable
+      //                   on each write (the sync job overwrites the running
+      //                   score every poll while the match is played).
+      //   - FINISHED   -> both scores are non-negative ints (the final result).
+      // This does NOT freeze a FINISHED score at the rules layer — it never
+      // did; the sync SCRIPT alone treats FINISHED as a fixed point
+      // (scripts/sync-fixtures.ts), which is exactly what keeps the manual
+      // admin override (submitFinalScore) able to correct a wrong result.
+      // kickoffAt / identity-field immutability is unchanged and still holds
+      // across every status, including the SCHEDULED->LIVE->FINISHED path.
       allow update: if isSignedIn()
         && isCompetitionAdmin(resource.data.competitionId)
         && request.resource.data.competitionId == resource.data.competitionId
@@ -91,11 +106,11 @@ service cloud.firestore {
         && request.resource.data.awayTeam == resource.data.awayTeam
         && request.resource.data.kickoffAt == resource.data.kickoffAt
         && request.resource.data.externalRef == resource.data.externalRef
-        && request.resource.data.status in ['SCHEDULED', 'FINISHED']
-        && (request.resource.data.status == 'FINISHED'
-              ? (request.resource.data.homeScore is int && request.resource.data.homeScore >= 0
-                 && request.resource.data.awayScore is int && request.resource.data.awayScore >= 0)
-              : (request.resource.data.homeScore == null && request.resource.data.awayScore == null));
+        && request.resource.data.status in ['SCHEDULED', 'LIVE', 'FINISHED']
+        && (request.resource.data.status == 'SCHEDULED'
+              ? (request.resource.data.homeScore == null && request.resource.data.awayScore == null)
+              : (request.resource.data.homeScore is int && request.resource.data.homeScore >= 0
+                 && request.resource.data.awayScore is int && request.resource.data.awayScore >= 0));
       allow delete: if false;
     }
 

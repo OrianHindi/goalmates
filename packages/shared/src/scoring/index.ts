@@ -76,7 +76,12 @@ export interface LeaderboardBet {
 
 export interface LeaderboardFixture {
   fixtureId: string;
-  status: 'SCHEDULED' | 'FINISHED';
+  // `LIVE` (live-score amendment) is accepted but scores nothing: only
+  // FINISHED fixtures award points (product-spec §4). `finishedFixtures`
+  // below filters to FINISHED, and `toFixtureResult` maps any non-FINISHED
+  // status (SCHEDULED or LIVE) to a no-result-yet 0-point outcome — so a
+  // live in-progress score never leaks into standings before full-time.
+  status: 'SCHEDULED' | 'LIVE' | 'FINISHED';
   homeScore: number | null;
   awayScore: number | null;
 }
