@@ -2,7 +2,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { scoreForBet } from '@goalmates/shared/scoring';
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '../auth/AuthContext';
@@ -28,6 +28,7 @@ export function FixtureDetailScreen({ route, navigation }: Props) {
   const [draftAway, setDraftAway] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -59,6 +60,18 @@ export function FixtureDetailScreen({ route, navigation }: Props) {
     }, [load])
   );
 
+  // No onSnapshot listener here (this app is one-time getDoc/getDocs reads
+  // everywhere -- see load() above and lib/fixtures.ts). A LIVE fixture is
+  // the one state where that staleness actually matters, since its score
+  // keeps changing while the user is sitting on this exact screen. Pull-to-
+  // refresh re-runs the same `load()` this screen already calls on focus --
+  // the smallest addition, no new data-fetching mechanism.
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }, [load]);
+
   if (!fixture || !user) {
     return (
       <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
@@ -69,6 +82,7 @@ export function FixtureDetailScreen({ route, navigation }: Props) {
 
   const locked = isFixtureLocked(fixture);
   const finished = fixture.status === 'FINISHED';
+  const live = fixture.status === 'LIVE';
 
   async function handleSave() {
     setSaving(true);
@@ -98,7 +112,10 @@ export function FixtureDetailScreen({ route, navigation }: Props) {
         <View style={{ width: 32 }} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 18 }}>
+      <ScrollView
+        contentContainerStyle={{ padding: 18 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
         {finished ? (
           <View style={styles.finalBanner}>
             <Text style={styles.finalTag}>FULL TIME</Text>
@@ -108,6 +125,20 @@ export function FixtureDetailScreen({ route, navigation }: Props) {
             <Text style={styles.finalTeams}>
               {fixture.homeTeam} vs {fixture.awayTeam}
             </Text>
+          </View>
+        ) : live ? (
+          <View style={styles.liveBanner}>
+            <View style={styles.liveTagRow}>
+              <View style={styles.liveDot} />
+              <Text style={styles.liveTag}>🔴 LIVE</Text>
+            </View>
+            <Text style={styles.liveScore}>
+              {fixture.homeScore} – {fixture.awayScore}
+            </Text>
+            <Text style={styles.liveTeams}>
+              {fixture.homeTeam} vs {fixture.awayTeam}
+            </Text>
+            <Text style={styles.liveNote}>Updates as the match is played — pull down to refresh</Text>
           </View>
         ) : locked ? (
           <View style={styles.lockBanner}>
@@ -254,6 +285,13 @@ const styles = StyleSheet.create({
   error: { color: colors.danger, marginTop: 10, textAlign: 'center' },
   lockBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#eceef0', borderRadius: 12, padding: 12 },
   lockBannerText: { color: '#5b636a', fontWeight: '800', fontSize: 12 },
+  liveBanner: { alignItems: 'center', backgroundColor: colors.dangerLight, borderRadius: 16, padding: 16 },
+  liveTagRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.danger },
+  liveTag: { fontSize: 11, fontWeight: '800', color: colors.danger, opacity: 0.9 },
+  liveScore: { fontSize: 30, fontWeight: '900', color: colors.danger, marginVertical: 4 },
+  liveTeams: { fontSize: 12.5, fontWeight: '700', color: '#8a2020' },
+  liveNote: { fontSize: 11, color: '#8a2020', opacity: 0.75, marginTop: 4 },
   finalBanner: { alignItems: 'center', backgroundColor: colors.blueLight, borderRadius: 16, padding: 16 },
   finalTag: { fontSize: 11, fontWeight: '800', color: colors.blue, opacity: 0.8 },
   finalScore: { fontSize: 30, fontWeight: '900', color: colors.blue, marginVertical: 4 },

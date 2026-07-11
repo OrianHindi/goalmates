@@ -69,12 +69,13 @@ export function Button({
   );
 }
 
-type ChipTone = 'open' | 'locked' | 'final' | 'admin';
+type ChipTone = 'open' | 'locked' | 'live' | 'final' | 'admin';
 
 export function Chip({ label, tone }: { label: string; tone: ChipTone }) {
   const toneStyles: Record<ChipTone, { bg: string; fg: string }> = {
     open: { bg: colors.greenLight, fg: colors.greenDark },
     locked: { bg: '#eceef0', fg: '#5b636a' },
+    live: { bg: colors.dangerLight, fg: colors.danger },
     final: { bg: colors.blueLight, fg: colors.blue },
     admin: { bg: colors.goldLight, fg: '#8a5a00' },
   };

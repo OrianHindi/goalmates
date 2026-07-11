@@ -1,7 +1,7 @@
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '../auth/AuthContext';
@@ -49,6 +49,7 @@ export function GroupDetailScreen({ route, navigation }: Props) {
   const [leaderboardTab, setLeaderboardTab] = useState<string>('ALL');
   const [standings, setStandings] = useState<RankedStanding[] | null>(null);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadGroup = useCallback(async () => {
     const group = await fetchGroup(groupId);
@@ -77,6 +78,20 @@ export function GroupDetailScreen({ route, navigation }: Props) {
     }, [loadGroup])
   );
 
+  // No real-time listener in this app (every read here is a one-time
+  // getDoc/getDocs, refreshed on screen focus via useFocusEffect -- see
+  // lib/fixtures.ts, lib/groups.ts). That's stale exactly once a fixture is
+  // LIVE and its score is changing without the user navigating away and
+  // back. Pull-to-refresh is the smallest addition that fits: it reuses the
+  // same one-time-read `loadGroup` this screen already calls on focus,
+  // rather than introducing onSnapshot (a bigger, screen-only divergence
+  // from every other screen's data-fetching pattern) just for this one case.
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadGroup();
+    setRefreshing(false);
+  }, [loadGroup]);
+
   const loadLeaderboard = useCallback(
     async (tab: string) => {
       if (!fixtures) return;
@@ -98,6 +113,10 @@ export function GroupDetailScreen({ route, navigation }: Props) {
     }, [topTab, leaderboardTab, fixtures, loadLeaderboard])
   );
 
+  // LIVE is its own bucket, not folded into SCHEDULED or FINISHED -- a LIVE
+  // fixture used to fall through both of the filters below and vanish from
+  // the list entirely (docs/architecture-v1-amendment-livescore.md §6).
+  const live = (fixtures ?? []).filter((f) => f.status === 'LIVE').sort((a, b) => a.kickoffAt.toMillis() - b.kickoffAt.toMillis());
   const nonFinished = (fixtures ?? []).filter((f) => f.status === 'SCHEDULED').sort((a, b) => a.kickoffAt.toMillis() - b.kickoffAt.toMillis());
   const finished = (fixtures ?? []).filter((f) => f.status === 'FINISHED').sort((a, b) => b.kickoffAt.toMillis() - a.kickoffAt.toMillis());
   const hero = nonFinished[0];
@@ -133,12 +152,24 @@ export function GroupDetailScreen({ route, navigation }: Props) {
       {fixtures === null ? (
         <ActivityIndicator style={{ marginTop: 40 }} />
       ) : topTab === 'fixtures' ? (
-        <ScrollView contentContainerStyle={{ padding: 18 }}>
-          {!hero && finished.length === 0 && (
+        <ScrollView
+          contentContainerStyle={{ padding: 18 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        >
+          {!hero && finished.length === 0 && live.length === 0 && (
             <View style={{ alignItems: 'center', paddingTop: 40 }}>
               <Text style={{ fontSize: 44, marginBottom: 10 }}>⚽</Text>
               <Text style={{ fontWeight: '700' }}>No fixtures yet</Text>
             </View>
+          )}
+
+          {live.length > 0 && (
+            <>
+              <Text style={styles.sectionLabel}>🔴 LIVE NOW</Text>
+              {live.map((f) => (
+                <FixtureRow key={f.fixtureId} fixture={f} onPress={() => navigation.navigate('FixtureDetail', { groupId, fixtureId: f.fixtureId })} />
+              ))}
+            </>
           )}
 
           {hero && (
@@ -237,12 +268,14 @@ function FixtureRow({ fixture, onPress }: { fixture: FixtureSummary; onPress: ()
         <Text style={styles.fxTime}>
           {fixture.status === 'FINISHED'
             ? `Final: ${fixture.homeScore}–${fixture.awayScore}`
-            : formatKickoff(fixture.kickoffAt.toMillis())}
+            : fixture.status === 'LIVE'
+              ? `Live: ${fixture.homeScore}–${fixture.awayScore}`
+              : formatKickoff(fixture.kickoffAt.toMillis())}
         </Text>
       </View>
       <Chip
-        label={fixture.status === 'FINISHED' ? '🔵 Final' : locked ? '🔒 Locked' : '🟢 Open'}
-        tone={fixture.status === 'FINISHED' ? 'final' : locked ? 'locked' : 'open'}
+        label={fixture.status === 'FINISHED' ? '🔵 Final' : fixture.status === 'LIVE' ? '🔴 LIVE' : locked ? '🔒 Locked' : '🟢 Open'}
+        tone={fixture.status === 'FINISHED' ? 'final' : fixture.status === 'LIVE' ? 'live' : locked ? 'locked' : 'open'}
       />
     </Pressable>
   );
