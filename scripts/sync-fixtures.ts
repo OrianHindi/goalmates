@@ -9,13 +9,39 @@
 // (the client-side `fixtures` write rule requires a competitionAdmins
 // grant; the Admin SDK ignores security rules entirely).
 //
-// Currently wired to StubFixtureSyncProvider, which just re-applies the
-// seed fixture data (packages/shared/src/seed/data.ts) idempotently.
-// TODO(founder): swap in RealFixtureSyncProvider once a real fixture-data
-// API key exists (see packages/shared/src/fixtures/stub-provider.ts and
-// docs/architecture-v1.md §8). That provider would read its key from the
-// FIXTURE_API_KEY env var — nothing here needs to change except the one
-// `new StubFixtureSyncProvider()` call below.
+// Provider selection (live-score amendment,
+// docs/architecture-v1-amendment-livescore.md): RealFixtureSyncProvider
+// (API-Football) is used ONLY when BOTH a real Firebase project is active
+// (GOOGLE_APPLICATION_CREDENTIALS set) AND a real API key is present
+// (FIXTURE_API_KEY set) — see the `useRealApi` check in `main()` below. In
+// every other case
+// (local dev, this repo's CI, or a real project with no key yet) this
+// falls back to StubFixtureSyncProvider, which just re-applies the seed
+// fixture data (packages/shared/src/seed/data.ts) idempotently. This is a
+// hard safety rule, not just a default: emulator/CI runs must NEVER be able
+// to burn real API-Football quota just because a stray env var happens to
+// be set, since FIXTURE_API_KEY alone is not sufficient — it also requires
+// real-project mode.
+//
+// TODO(founder): once a real Firebase project + FIXTURE_API_KEY both exist
+// (creating an api-sports.io account is a founder action, out of scope
+// here), this script automatically starts using RealFixtureSyncProvider —
+// see packages/shared/src/fixtures/real-provider.ts for exactly how to test
+// it, and its file header for field-mapping assumptions that should be
+// re-checked against a real response the first time it runs for real.
+//
+// Live-window gating (docs/architecture-v1-amendment-livescore.md §4): when
+// using the real provider, this script first does a Firestore-only check
+// (isWithinLiveWindow, packages/shared/src/fixtures/live-window.ts) —
+// nothing live right now means it exits having made ZERO calls to the
+// rate-limited (100 requests/day free tier) API-Football endpoint. Only
+// when something IS live does it spend exactly one request
+// (`syncLiveFixtures`, which covers every tracked competition in a single
+// call) — this is what keeps the approved 10-minute cron cadence inside
+// budget even on a heavy matchday. In stub/emulator mode this gate is
+// skipped entirely (the stub has no real quota to protect) and the
+// existing full per-competition sync always runs, unchanged from before
+// this amendment — so every existing test/CI behavior is preserved.
 //
 // --- Two target modes, chosen by environment variables --------------------
 //
@@ -60,7 +86,14 @@
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore, Timestamp, type Firestore } from 'firebase-admin/firestore';
 
-import { SEED_COMPETITIONS, StubFixtureSyncProvider, type FixtureSyncProvider, type FixtureUpdate } from '@goalmates/shared';
+import {
+  SEED_COMPETITIONS,
+  StubFixtureSyncProvider,
+  RealFixtureSyncProvider,
+  isWithinLiveWindow,
+  type FixtureSyncProvider,
+  type FixtureUpdate,
+} from '@goalmates/shared';
 
 const PLACEHOLDER_PROJECT_ID = 'goalmates-dev-placeholder'; // matches .firebaserc "default"
 
@@ -88,10 +121,11 @@ interface StoredFixture {
   competitionId: string;
   homeTeam: string;
   awayTeam: string;
-  status: 'SCHEDULED' | 'FINISHED';
+  status: 'SCHEDULED' | 'LIVE' | 'FINISHED';
   homeScore: number | null;
   awayScore: number | null;
   externalRef: string | null;
+  kickoffAt: Timestamp;
 }
 
 async function applyFixtureUpdate(update: FixtureUpdate): Promise<ApplyResult> {
@@ -153,16 +187,67 @@ async function syncCompetition(provider: FixtureSyncProvider, competitionId: str
   console.log(`  ${competitionId}: ${updates.length} fixtures checked`);
 }
 
+/**
+ * The Firestore-only, zero-API-cost live-window check
+ * (docs/architecture-v1-amendment-livescore.md §4). Fetches every fixture
+ * that's SCHEDULED or LIVE (a single-field `in` filter — no composite index
+ * needed, same "index-free by construction" property architecture-v1.md §5
+ * already relies on) and filters client-side with `isWithinLiveWindow`,
+ * since Firestore can't express "kickoffAt + 2.5h >= now" as a query
+ * predicate directly. At GoalMates' fixture volumes (a couple of
+ * competitions, at most a season's worth of not-yet-finished matches) this
+ * is a small, cheap read — if that ever stops being true, narrow it with a
+ * composite index on (status, kickoffAt) instead of changing this logic.
+ */
+async function anyFixtureCurrentlyLive(now: Date): Promise<boolean> {
+  const snap = await db.collection('fixtures').where('status', 'in', ['SCHEDULED', 'LIVE']).get();
+  return snap.docs.some((doc) => {
+    const data = doc.data() as StoredFixture;
+    return isWithinLiveWindow(data.kickoffAt.toDate(), now);
+  });
+}
+
 async function main(): Promise<void> {
   console.log(`Syncing fixtures (${usingRealProject ? 'real project' : 'emulator'}, project: ${process.env.GCLOUD_PROJECT ?? '(from credentials)'})`);
 
-  const provider: FixtureSyncProvider = new StubFixtureSyncProvider();
   const competitionIds = Object.values(SEED_COMPETITIONS).map((c) => c.competitionId);
+  const useRealApi = usingRealProject && Boolean(process.env.FIXTURE_API_KEY);
 
   const counts: Record<ApplyResult, number> = { created: 0, updated: 0, unchanged: 0, 'skipped-finished': 0 };
 
-  for (const competitionId of competitionIds) {
-    await syncCompetition(provider, competitionId, counts);
+  if (useRealApi) {
+    // Real provider: honor the quota-bounded design exactly. Check
+    // Firestore first, for free; only ever call API-Football when
+    // something is actually live, and then only once (syncLiveFixtures
+    // covers every tracked competition in a single request).
+    const live = await anyFixtureCurrentlyLive(new Date());
+    if (!live) {
+      console.log('No fixture is currently in its live window — skipping this run (zero API-Football requests spent).');
+      return;
+    }
+
+    const provider = new RealFixtureSyncProvider(process.env.FIXTURE_API_KEY!);
+    // syncLiveFixtures is a required capability of RealFixtureSyncProvider
+    // (see packages/shared/src/fixtures/real-provider.ts) — the `!` is safe
+    // here, not a cast around a genuinely-optional gap.
+    const updates = await provider.syncLiveFixtures!(competitionIds);
+    for (const update of updates) {
+      const result = await applyFixtureUpdate(update);
+      counts[result] += 1;
+    }
+    console.log(`Live check: ${updates.length} fixtures currently live across ${competitionIds.length} competitions.`);
+  } else {
+    // Stub/emulator mode (including this repo's CI): no real quota to
+    // protect, so run the full per-competition pass every time, exactly as
+    // before this amendment. This also naturally handles the stub's
+    // SCHEDULED/LIVE/FINISHED seed data (including the seeded LIVE
+    // fixture, packages/shared/src/seed/data.ts) without any special-casing
+    // — `applyFixtureUpdate` already treats LIVE like any other non-FINISHED
+    // status: it diffs and patches whatever changed.
+    const provider: FixtureSyncProvider = new StubFixtureSyncProvider();
+    for (const competitionId of competitionIds) {
+      await syncCompetition(provider, competitionId, counts);
+    }
   }
 
   console.log(

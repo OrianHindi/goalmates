@@ -39,7 +39,9 @@ export interface SeedFixture {
   competitionId: string;
   homeTeam: string;
   awayTeam: string;
-  status: 'SCHEDULED' | 'FINISHED';
+  /** LIVE added by the live-score amendment — a match in progress, with a
+   * running (not yet final) score (docs/architecture-v1-amendment-livescore.md). */
+  status: 'SCHEDULED' | 'LIVE' | 'FINISHED';
   homeScore: number | null;
   awayScore: number | null;
   /** Minutes relative to seed-run time; negative = past, positive = future. */
@@ -64,6 +66,11 @@ export const SEED_FIXTURES: SeedFixture[] = [
   // right up to, then rejected at, kickoff) without waiting for a real match.
   { fixtureId: 'wc2026-f11', competitionId: 'wc2026', homeTeam: 'Ghana', awayTeam: 'Nigeria', status: 'SCHEDULED', homeScore: null, awayScore: null, kickoffOffsetMinutes: 4 },
   { fixtureId: 'wc2026-f12', competitionId: 'wc2026', homeTeam: 'Colombia', awayTeam: 'Ecuador', status: 'SCHEDULED', homeScore: null, awayScore: null, kickoffOffsetMinutes: 8 * DAY },
+  // Seeded LIVE fixture (live-score amendment): kicked off 35 minutes ago,
+  // well inside the 2.5h live window (packages/shared/src/fixtures/live-window.ts),
+  // with a running (not final) score — so `pnpm seed` gives a realistic
+  // out-of-the-box LIVE example with zero real API/sync-job dependency.
+  { fixtureId: 'wc2026-f13', competitionId: 'wc2026', homeTeam: 'Chile', awayTeam: 'Peru', status: 'LIVE', homeScore: 1, awayScore: 1, kickoffOffsetMinutes: -35 },
 
   // --- Israeli Premier League (6 fixtures) ---
   { fixtureId: 'ipl-f01', competitionId: 'israeli-premier-league', homeTeam: 'Maccabi Tel Aviv', awayTeam: 'Hapoel Beer Sheva', status: 'FINISHED', homeScore: 2, awayScore: 1, kickoffOffsetMinutes: -6 * DAY },
@@ -143,4 +150,8 @@ export const SEED_BETS: SeedBet[] = [
   { userId: 'seed-bob', fixtureId: 'ipl-f02', predictedHome: 1, predictedAway: 1 }, // exact, 3
   { userId: 'seed-carol', fixtureId: 'ipl-f03', predictedHome: 3, predictedAway: 0 }, // exact, 3
   // dave has no bets at all yet — exercises the "no bet" / absent-member row.
+  // --- Bets on the seeded LIVE fixture (wc2026-f13) — no points yet, but
+  // already past kickoff so these are revealed to every group member. ---
+  { userId: 'seed-alice', fixtureId: 'wc2026-f13', predictedHome: 1, predictedAway: 1 },
+  { userId: 'seed-bob', fixtureId: 'wc2026-f13', predictedHome: 2, predictedAway: 0 },
 ];
