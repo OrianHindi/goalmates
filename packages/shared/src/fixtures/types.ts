@@ -12,9 +12,16 @@
 // converts it to a Timestamp only at the point of writing.
 //
 // See docs/architecture-v1.md §8 for the full design (why GitHub Actions
-// cron, the idempotency guarantee, the emulator-vs-real conditional).
+// cron, the idempotency guarantee, the emulator-vs-real conditional), and
+// docs/architecture-v1-amendment-livescore.md for the LIVE status + the
+// schedule-aware, quota-bounded live-sync design this interface supports.
 
-export type FixtureSyncStatus = 'SCHEDULED' | 'FINISHED';
+/**
+ * LIVE was added by the live-score amendment: a match currently being
+ * played, with a running (not yet final) score. Mirrors
+ * `FixtureStatus` in packages/shared/src/firestore/types.ts.
+ */
+export type FixtureSyncStatus = 'SCHEDULED' | 'LIVE' | 'FINISHED';
 
 /** One fixture's current state, as reported by an upstream fixture-data source. */
 export interface FixtureUpdate {
@@ -25,9 +32,9 @@ export interface FixtureUpdate {
   /** ISO-8601 instant. Caller converts to a Firestore Timestamp when writing. */
   kickoffAt: string;
   status: FixtureSyncStatus;
-  /** null until FINISHED. */
+  /** null while SCHEDULED; a running (LIVE) or final (FINISHED) tally otherwise. */
   homeScore: number | null;
-  /** null until FINISHED. */
+  /** null while SCHEDULED; a running (LIVE) or final (FINISHED) tally otherwise. */
   awayScore: number | null;
   /** Upstream provider's own fixture ID, for future dedup/lookup. Null for the stub. */
   externalRef: string | null;
@@ -48,4 +55,21 @@ export interface FixtureSyncProvider {
    * scripts/sync-fixtures.ts's `applyFixtureUpdate`).
    */
   syncFixtures(competitionId: string): Promise<FixtureUpdate[]>;
+
+  /**
+   * OPTIONAL fast path for the live-score amendment's quota-bounded design
+   * (docs/architecture-v1-amendment-livescore.md §4): returns updates for
+   * whatever is live RIGHT NOW across every competition in `competitionIds`,
+   * via a single underlying request regardless of how many competitions are
+   * passed (API-Football's `fixtures?live=all` naturally returns every
+   * concurrent live match in one call — this method exists so the sync
+   * script never has to call the provider once per competition just to
+   * check what's live, which would multiply real API quota use). Adding
+   * this as an OPTIONAL interface member (rather than changing
+   * `syncFixtures`'s signature) keeps every existing implementation and
+   * call site unchanged — `StubFixtureSyncProvider` simply doesn't
+   * implement it, and the sync script falls back to the existing
+   * per-competition `syncFixtures` loop when it's absent.
+   */
+  syncLiveFixtures?(competitionIds: string[]): Promise<FixtureUpdate[]>;
 }

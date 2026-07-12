@@ -7,19 +7,22 @@ name: Fixture Sync
 # needed later) is in docs/architecture-v1.md §8 — read that first if
 # changing this file.
 #
-# Cron interval: every 60 minutes. Picked over a tighter 30-min cadence
-# because this repo is private, so GitHub Actions minutes are NOT
-# unlimited-free the way they are on a public repo — they draw from the
-# account's monthly free-tier minutes. Hourly is still plenty fresh for a
-# friends' hobby app (a reschedule or score correction showing up within an
-# hour is fine) and roughly halves the CI-minutes footprint of the
-# emulator-validated default path below versus 30 minutes. Once the real-
-# project path below is active, a real sync run has no emulator/JVM
-# startup cost and is much cheaper per run — worth revisiting the interval
-# at that point if fresher data is wanted.
+# Cron interval: every 10 minutes (docs/architecture-v1-amendment-livescore.md
+# §4 — supersedes the original hourly cadence). This repo is now PUBLIC
+# specifically to make this affordable: GitHub-hosted runners are free and
+# unlimited on public repos (verified against GitHub's billing docs), so the
+# ~4,400-6,600 runner-minutes/month this cadence uses costs nothing here,
+# whereas the same load on a private Free-tier repo (2,000 min/mo cap) would
+# be 2.5-3x over budget. The 10-minute tick itself is cheap: every run does a
+# Firestore-only "is anything live right now" check first
+# (scripts/sync-fixtures.ts's `anyFixtureCurrentlyLive`) and only spends any
+# API-Football quota (100 requests/day free tier — the real binding
+# constraint) on the runs where something actually is live. See the amendment
+# doc for the full budget math (~21 req/day typical, ~61 req/day worst-case
+# World-Cup-matchday, both comfortably inside 100/day).
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -61,12 +64,22 @@ jobs:
       # secret (a Firebase service-account JSON key). Until then this
       # step is skipped entirely: no secret is required for this workflow
       # (or its CI) to pass right now.
+      #
+      # FIXTURE_API_KEY (also a repo secret, added alongside
+      # FIREBASE_SERVICE_ACCOUNT once the founder creates an api-sports.io
+      # account — docs/architecture-v1-amendment-livescore.md) is passed
+      # through unconditionally: scripts/sync-fixtures.ts only switches to
+      # RealFixtureSyncProvider when BOTH this real-project step is active
+      # AND FIXTURE_API_KEY is actually set, so it's harmless to reference
+      # here even before that secret exists (an empty secret just means the
+      # script keeps using the stub, same as today).
       # -------------------------------------------------------------
       - name: Sync fixtures (real Firebase project)
         if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'true' }}
         env:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+          FIXTURE_API_KEY: ${{ secrets.FIXTURE_API_KEY }}
         run: |
           printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$GOOGLE_APPLICATION_CREDENTIALS"
           pnpm run sync-fixtures
@@ -81,15 +94,41 @@ jobs:
       # FINISHED fixture in play to verify the sync doesn't corrupt, then
       # runs the sync script twice back-to-back to exercise idempotency —
       # the second run should report zero created/updated fixtures.
+      #
+      # Cadence note (docs/architecture-v1-amendment-livescore.md §4,
+      # "workflow-shape note for the follow-up implementer" — this is that
+      # follow-up): booting a JVM-based emulator every 10 minutes (144x/day)
+      # to prove idempotency is wasteful even though it's free on a public
+      # repo, so this dry-run only actually runs on `workflow_dispatch`
+      # (manual test) or once per hour (the first 10-minute tick of each
+      # hour, via the wall-clock minute check in the "Determine cadence"
+      # step below) — every other 10-minute tick in this default (no real
+      # project) path is a fast, near-instant no-op that still proves
+      # checkout/install stayed green.
       # -------------------------------------------------------------
-      - uses: actions/setup-java@v4
+      - name: Determine cadence
+        id: cadence
         if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'false' }}
+        run: |
+          minute=$(date -u +%M)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$((10#$minute))" -lt 10 ]; then
+            echo "run_dry_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_dry_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'false' && steps.cadence.outputs.run_dry_run == 'true' }}
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Sync fixtures (emulator dry run — no real project yet)
-        if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'false' }}
+        if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'false' && steps.cadence.outputs.run_dry_run == 'true' }}
         run: |
           pnpm exec firebase emulators:exec --only firestore,auth \
             "pnpm seed && pnpm run sync-fixtures && pnpm run sync-fixtures"
+
+      - name: Skip (default path, not the hourly dry-run tick)
+        if: ${{ env.HAS_REAL_FIREBASE_PROJECT == 'false' && steps.cadence.outputs.run_dry_run == 'false' }}
+        run: echo "No real Firebase project yet and not this hour's dry-run tick — nothing to do this run."
