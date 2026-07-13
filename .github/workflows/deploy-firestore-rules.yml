@@ -1,0 +1,51 @@
+name: Deploy Firestore Rules
+
+# One-off, manually-triggered workflow to push firestore.rules to the real
+# Firebase project. There is no automatic trigger on push -- rules changes
+# get reviewed via the normal PR process on this file, then deployed
+# deliberately via workflow_dispatch, so a rules change landing on main
+# never silently takes effect on the live project without a separate,
+# explicit action.
+#
+# Requires the FIREBASE_SERVICE_ACCOUNT repo secret (already set) and the
+# real project id below to match .firebaserc's alias. If FIREBASE_SERVICE_ACCOUNT
+# isn't set yet, this fails fast with a clear message instead of silently
+# no-op'ing (unlike fixture-sync.yml, where a no-op is the correct default
+# — here, someone explicitly asked for a deploy, so a missing secret should
+# be loud, not quiet).
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the real-project secret
+        run: |
+          if [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT secret is not set — nothing to deploy against. Add the secret first."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Deploy firestore.rules to the real project
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service-account.json
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$GOOGLE_APPLICATION_CREDENTIALS"
+          pnpm exec firebase deploy --only firestore:rules --project goalmates-cdbc2
+          rm -f "$GOOGLE_APPLICATION_CREDENTIALS"
